@@ -32,7 +32,8 @@ mod symbol_alloc;
 
 use render_expr::{get_field, is_variant, render_expression};
 use render_solve::{
-    render_linsolve_mlir_function, render_matmul_c_function, render_matmul_mlir_function,
+    render_linsolve_mlir_function, render_matmul_c_function, render_matmul_casadi_function,
+    render_matmul_jax_function, render_matmul_mlir_function,
     render_optional_solve_slot_assign_c_function, render_solve_block_c_function,
     render_solve_block_py_function, render_solve_block_rust_function,
     render_solve_pre_param_binding_c_function, render_solve_row_c_function,
@@ -1259,6 +1260,8 @@ fn create_environment() -> Environment<'static> {
         render_solve_pre_param_binding_c_function,
     );
     env.add_function("render_matmul_c", render_matmul_c_function);
+    env.add_function("render_matmul_jax", render_matmul_jax_function);
+    env.add_function("render_matmul_casadi", render_matmul_casadi_function);
     env.add_function("render_matmul_mlir", render_matmul_mlir_function);
     env.add_function("render_linsolve_mlir", render_linsolve_mlir_function);
     env.add_function("render_equation", render_equation_function);

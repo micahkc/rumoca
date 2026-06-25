@@ -23,6 +23,8 @@ fabs = jnp.abs; sign = jnp.sign; floor = jnp.floor; ceil = jnp.ceil; trunc = jnp
 atan2 = jnp.arctan2; fmin = jnp.minimum; fmax = jnp.maximum
 if_else = jnp.where; logical_and = jnp.logical_and; logical_or = jnp.logical_or
 inf = jnp.inf
+# Native tensor aliases for the solve dialect's MatMul nodes (row-major reshape).
+matmul = jnp.matmul; stack = jnp.stack
 
 {% set n_y = solve.solve_layout.state_scalar_count -%}
 N_Y = {{ n_y }}
@@ -54,7 +56,23 @@ def rhs(x, u, p):
 	P = jnp.concatenate(_parts)
 	out = [None] * {{ solve_blocks.continuous.derivative_rhs.output_count }}
 {%- set cfg = {"time": "0.0", "y": "x[{}]", "p": "P[{}]"} %}
-{{ render_solve_block_py(solve_blocks.continuous.derivative_rhs.scalar_programs.programs, cfg, "out[{}] = {}") }}
+{%- set derivative = solve_blocks.continuous.derivative_rhs %}
+{%- if derivative.scalar_programs_use_linear_solve_component %}
+	# Fallback: a LinearSolveComponent is present, so use the fully-scalarized
+	# program stream (which calls _linsolve_component) rather than node iteration.
+{{ render_solve_block_py(derivative.scalar_programs.programs, cfg, "out[{}] = {}", derivative.scalar_programs.output_indices) }}
+{%- else %}
+{%- set ns = namespace(offset=0) %}
+{%- for node in derivative.nodes %}
+{%- if node.MatMul is defined %}
+{{ render_matmul_jax(node.MatMul, ns.offset, cfg) }}
+{%- set ns.offset = ns.offset + node.MatMul.m * node.MatMul.n %}
+{%- elif node.ScalarPrograms is defined %}
+{{ render_solve_block_py(node.ScalarPrograms.programs, cfg, "out[{}] = {}", node.ScalarPrograms.output_indices) }}
+{%- set ns.offset = ns.offset + store_output_count(node.ScalarPrograms.programs) %}
+{%- endif %}
+{%- endfor %}
+{%- endif %}
 	return jnp.stack(out)
 
 

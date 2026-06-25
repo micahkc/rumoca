@@ -1038,6 +1038,219 @@ pub(in crate::codegen) fn render_matmul_c_function(
     }
 }
 
+/// Python array-backend dialect for [`render_matmul_py_function`].
+///
+/// The two backends differ in their native matmul call **and** their reshape
+/// memory order, so the renderer is parameterized over them:
+/// - [`Jax`](MatMulPyDialect::Jax): `matmul(A, B)` with row-major
+///   `stack([...]).reshape((m, k))` (jnp reshape is row-major).
+/// - [`Casadi`](MatMulPyDialect::Casadi): `ca.mtimes(A, B)`. `ca.reshape` is
+///   COLUMN-major while operands are row-major, so each operand is built as
+///   `ca.reshape(ca.vertcat(...), cols, rows).T`, mirroring `_linsolve_component`.
+#[derive(Clone, Copy)]
+pub(in crate::codegen) enum MatMulPyDialect {
+    Jax,
+    Casadi,
+}
+
+impl MatMulPyDialect {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Jax => "jax",
+            Self::Casadi => "casadi",
+        }
+    }
+
+    /// Render a row-major operand of shape `rows`x`cols` from the list of
+    /// rendered scalar register expressions (`elems`, row-major order).
+    fn operand(self, elems: &[String], rows: usize, cols: usize) -> String {
+        let items = elems.join(", ");
+        match self {
+            // jnp.stack + jnp.reshape are both row-major.
+            Self::Jax => format!("stack([{items}]).reshape(({rows}, {cols}))"),
+            // ca.reshape is column-major, so reshape into (cols, rows) then
+            // transpose to get the intended row-major (rows, cols).
+            Self::Casadi => format!("reshape(vertcat({items}), {cols}, {rows}).T"),
+        }
+    }
+
+    /// Render the native matrix-multiply call (`matmul`/`mtimes` are bound to the
+    /// backend namespace by the consuming template alias block).
+    fn matmul_call(self, lhs: &str, rhs: &str) -> String {
+        match self {
+            Self::Jax => format!("matmul({lhs}, {rhs})"),
+            Self::Casadi => format!("mtimes({lhs}, {rhs})"),
+        }
+    }
+}
+
+/// Python (JAX/CasADi) counterpart of [`render_matmul_c_function`].
+///
+/// Emits one-tab-indented Python statements that build the m×k and k×n operands
+/// from the solve register file, call the backend native matmul, and write the
+/// m×n result into the contiguous `out[offset + r*n + c]` slots in ROW-MAJOR
+/// order. Mirrors the C dispatch:
+/// - `Diagonal` lhs (n=1, m=k): element-wise scalar multiplies (no matmul call)
+/// - `Explicit { nnz }` lhs: scalar accumulate over each nonzero position
+/// - `Dense` (default): `matmul`/`mtimes` over the full operands
+///
+/// `node` is the inner struct of the `MatMul` variant. `output_offset` is the
+/// first `out[]` index this node writes to.
+pub(in crate::codegen) fn render_matmul_py_function(
+    dialect: MatMulPyDialect,
+    node: Value,
+    output_offset: Value,
+    config: Value,
+) -> Result<String, minijinja::Error> {
+    let cfg = SolveRowCConfig::from_value(&config);
+    let offset: usize = output_offset
+        .as_usize()
+        .ok_or_else(|| render_err("output_offset must be a non-negative integer"))?;
+
+    let lhs_ops = get_field(&node, "lhs_ops")?;
+    let lhs_start = solve_field_usize(&node, "lhs_start")?;
+    let rhs_ops = get_field(&node, "rhs_ops")?;
+    let rhs_start = solve_field_usize(&node, "rhs_start")?;
+    let m = solve_field_usize(&node, "m")?;
+    let k = solve_field_usize(&node, "k")?;
+    let n = solve_field_usize(&node, "n")?;
+
+    let lhs_sparsity_val = get_field(&node, "lhs_sparsity")
+        .map_err(|err| render_err(format!("MatMul missing lhs_sparsity: {err}")))?;
+    let lhs_sparsity_str = value_to_string(&lhs_sparsity_val);
+    let is_diagonal_matvec = lhs_sparsity_str.contains("Diagonal") && n == 1 && m == k;
+    let explicit_nnz = if !is_diagonal_matvec && lhs_sparsity_str.contains("Explicit") {
+        Some(extract_explicit_nnz(&lhs_sparsity_val)?)
+    } else {
+        None
+    };
+    let shape = MatMulRenderShape {
+        lhs_start,
+        rhs_start,
+        m,
+        k,
+        n,
+        offset,
+    };
+    let end_offset =
+        validate_matmul_render_shape(shape, is_diagonal_matvec, explicit_nnz.is_some())?;
+
+    // Evaluate lhs_ops then rhs_ops into a shared register file (Python dialect).
+    let mut regs = Vec::<String>::new();
+    for op in lhs_ops
+        .try_iter()
+        .map_err(|_| render_err("MatMul lhs_ops must be iterable"))?
+    {
+        render_solve_op_py(&op, &cfg, &mut regs, None)?;
+    }
+    for op in rhs_ops
+        .try_iter()
+        .map_err(|_| render_err("MatMul rhs_ops must be iterable"))?
+    {
+        render_solve_op_py(&op, &cfg, &mut regs, None)?;
+    }
+
+    let label = dialect.label();
+    if is_diagonal_matvec {
+        // A (m×m diagonal) * x (m×1): out[i] = A[i,i] * x[i].
+        let mut lines = format!("\t# DiagonalMul {m}x{m} ({label}): out[{offset}..{end_offset}]\n");
+        for i in 0..m {
+            let diag_reg = solve_reg(&regs, shape.diagonal_lhs_reg(i)?)?;
+            let rhs_reg = solve_reg(&regs, shape.rhs_vector_reg(i)?)?;
+            lines.push_str(&format!(
+                "\tout[{out}] = ({diag_reg}) * ({rhs_reg})\n",
+                out = shape.output_index(i)?,
+            ));
+        }
+        Ok(lines.trim_end().to_string())
+    } else if let Some(nnz) = explicit_nnz {
+        Ok(
+            render_explicit_sparse_matmul_py(&regs, &nnz, shape, end_offset, label)?
+                .trim_end()
+                .to_string(),
+        )
+    } else {
+        let lhs_count = shape.dense_lhs_count()?;
+        let rhs_count = shape.dense_rhs_count()?;
+        let lhs_elems =
+            render_matmul_register_array(&regs, lhs_start, lhs_count, "MatMul lhs operand")?;
+        let rhs_elems =
+            render_matmul_register_array(&regs, rhs_start, rhs_count, "MatMul rhs operand")?;
+        let lhs = dialect.operand(&lhs_elems, m, k);
+        let rhs = dialect.operand(&rhs_elems, k, n);
+        let mut lines = format!(
+            "\t# MatMul {m}x{k}x{n} ({label}): out[{offset}..{end_offset}]\n\
+             \t__mm{offset} = {}\n",
+            dialect.matmul_call(&lhs, &rhs)
+        );
+        // Extract the m×n result into contiguous out[] slots in row-major order.
+        for slot in 0..shape.output_count()? {
+            let r = slot / n;
+            let c = slot % n;
+            lines.push_str(&format!(
+                "\tout[{out}] = __mm{offset}[{r}, {c}]\n",
+                out = shape.output_index(slot)?,
+            ));
+        }
+        Ok(lines.trim_end().to_string())
+    }
+}
+
+fn render_explicit_sparse_matmul_py(
+    regs: &[String],
+    nnz: &[(usize, usize)],
+    shape: MatMulRenderShape,
+    end_offset: usize,
+    label: &str,
+) -> Result<String, minijinja::Error> {
+    let mut lines = format!(
+        "\t# SparseMul {}x{}x{} ({} nnz, {}): out[{}..{}]\n",
+        shape.m,
+        shape.k,
+        shape.n,
+        nnz.len(),
+        label,
+        shape.offset,
+        end_offset
+    );
+    for slot in 0..shape.output_count()? {
+        let out_row = slot / shape.n;
+        let out_col = slot % shape.n;
+        let output_idx = shape.output_index(slot)?;
+        let row_nzs = matmul_nnz_for_row(nnz, out_row)?;
+        if row_nzs.is_empty() {
+            lines.push_str(&format!("\tout[{output_idx}] = 0.0\n"));
+            continue;
+        }
+        let mut terms = render_vec_with_capacity(row_nzs.len(), "MatMul sparse term count")?;
+        for (_, ki) in &row_nzs {
+            let a = solve_reg(regs, shape.lhs_matrix_reg(out_row, *ki)?)?;
+            let b = solve_reg(regs, shape.rhs_matrix_reg(*ki, out_col)?)?;
+            terms.push(format!("({a}) * ({b})"));
+        }
+        lines.push_str(&format!("\tout[{output_idx}] = {}\n", terms.join(" + ")));
+    }
+    Ok(lines)
+}
+
+/// JAX template entry point: `render_matmul_jax(node.MatMul, offset, cfg)`.
+pub(in crate::codegen) fn render_matmul_jax_function(
+    node: Value,
+    output_offset: Value,
+    config: Value,
+) -> Result<String, minijinja::Error> {
+    render_matmul_py_function(MatMulPyDialect::Jax, node, output_offset, config)
+}
+
+/// CasADi template entry point: `render_matmul_casadi(node.MatMul, offset, cfg)`.
+pub(in crate::codegen) fn render_matmul_casadi_function(
+    node: Value,
+    output_offset: Value,
+    config: Value,
+) -> Result<String, minijinja::Error> {
+    render_matmul_py_function(MatMulPyDialect::Casadi, node, output_offset, config)
+}
+
 fn render_explicit_sparse_matmul_c(
     regs: &[String],
     nnz: &[(usize, usize)],
