@@ -369,6 +369,12 @@ pub struct Variable {
     /// branch selection (MLS §18.3).
     pub evaluate: bool,
 
+    /// True if this parameter has annotation(__rumoca(trainable=true)).
+    /// Marks a learnable weight (theta) so codegen can split it from fixed
+    /// parameters (p).
+    #[serde(default)]
+    pub trainable: bool,
+
     /// True if this variable's base type is Integer or Boolean (MLS §4.5).
     /// Such variables are discrete by default even without explicit `discrete` prefix.
     /// This is used during variable classification to correctly identify discrete
@@ -487,6 +493,7 @@ impl Variable {
             binding: None,
             binding_from_modification: false,
             evaluate: false,
+            trainable: false,
             is_discrete_type: false,
             is_primitive: false,
             from_expandable_connector: false,

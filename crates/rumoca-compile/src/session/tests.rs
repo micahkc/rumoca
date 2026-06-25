@@ -1156,6 +1156,50 @@ fn test_compile_extracts_rumoca_fixed_step_annotation() {
 }
 
 #[test]
+fn test_compile_threads_rumoca_trainable_annotation_to_dae_parameters() {
+    let mut session = Session::default();
+    session
+        .add_document(
+            "test.mo",
+            r#"
+                model TrainNet
+                  parameter Real W[2,2] annotation(__rumoca(trainable=true));
+                  parameter Real b = 1.0;
+                  Real x;
+                equation
+                  der(x) = W[1,1]*x + b;
+                end TrainNet;
+                "#,
+        )
+        .unwrap();
+
+    let result = session.compile_model("TrainNet").unwrap();
+    let parameters = &result.dae.variables.parameters;
+
+    // Every scalar element of the annotated W matrix must carry trainable=true.
+    let mut saw_w = false;
+    for (name, var) in parameters {
+        if name.as_str().starts_with("W[") || name.as_str() == "W" {
+            saw_w = true;
+            assert!(
+                var.trainable,
+                "annotated W element {} must have trainable == true",
+                name.as_str()
+            );
+        }
+    }
+    assert!(saw_w, "expected W parameter elements in DAE parameters");
+
+    let b = parameters
+        .get(&rumoca_core::VarName::new("b"))
+        .expect("b must exist in DAE parameters");
+    assert!(
+        !b.trainable,
+        "un-annotated parameter b must have trainable == false"
+    );
+}
+
+#[test]
 fn test_compile_extracts_solver_from_openmodelica_simulation_flags() {
     let mut session = Session::default();
     session

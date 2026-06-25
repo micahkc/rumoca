@@ -75,6 +75,7 @@ mod tests {
             is_discrete_type: false,
             from_expandable_connector: false,
             evaluate: false,
+            trainable: false,
             is_final: false,
             is_overconstrained: false,
             is_protected: false,

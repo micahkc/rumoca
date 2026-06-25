@@ -223,6 +223,7 @@ fn declare_condition_pre_parameter(dae_model: &mut dae::Dae, condition_name: &st
             description: Some(format!("pre() of {condition_name}")),
             causality: dae::VariableCausality::CalculatedParameter,
             is_tunable: false,
+            trainable: false,
             origin: dae::VariableOrigin::Generated,
         });
 }

@@ -785,6 +785,11 @@ pub struct Variable {
     /// remain fixed; all other parameters are tunable.
     #[serde(default)]
     pub is_tunable: bool,
+    /// True if this parameter has annotation(__rumoca(trainable=true)).
+    /// Marks a learnable weight (theta) so codegen can split it from fixed
+    /// parameters (p).
+    #[serde(default)]
+    pub trainable: bool,
     /// Whether this variable corresponds to a source Modelica component or a
     /// compiler-generated Appendix B/backend slot.
     #[serde(default)]
@@ -812,6 +817,7 @@ impl Variable {
             description: None,
             causality: VariableCausality::default(),
             is_tunable: bool::default(),
+            trainable: bool::default(),
             origin: VariableOrigin::default(),
         }
     }
@@ -843,7 +849,7 @@ impl Serialize for Variable {
         S: serde::Serializer,
     {
         let include_component_ref = !serializer.is_human_readable() || self.component_ref.is_some();
-        let field_count = if include_component_ref { 20 } else { 19 };
+        let field_count = if include_component_ref { 21 } else { 20 };
         let mut state = serializer.serialize_struct("Variable", field_count)?;
         state.serialize_field("name", &self.name)?;
         if include_component_ref {
@@ -865,6 +871,7 @@ impl Serialize for Variable {
         state.serialize_field("description", &self.description)?;
         state.serialize_field("causality", &self.causality)?;
         state.serialize_field("is_tunable", &self.is_tunable)?;
+        state.serialize_field("trainable", &self.trainable)?;
         state.serialize_field("origin", &self.origin)?;
         state.end()
     }

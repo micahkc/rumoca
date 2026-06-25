@@ -74,7 +74,7 @@ use component_loop::{
 use dims::{
     qualify_shape_subscripts_imports, resolve_component_dimensions, resolve_type_alias_dimensions,
 };
-use evaluate_annotation::has_evaluate_annotation;
+use evaluate_annotation::{has_evaluate_annotation, has_trainable_annotation};
 use instance_sections::{
     algorithms_to_instance, equations_to_instance_cloned, equations_to_instance_without_connections,
 };
@@ -1345,6 +1345,7 @@ struct InstanceDataBuild<'a> {
     is_primitive: bool,
     is_discrete_type: bool,
     evaluate: bool,
+    trainable: bool,
     source_map: &'a rumoca_core::SourceMap,
     ctx: &'a InstantiateContext,
     comp: &'a ast::Component,
@@ -1406,6 +1407,7 @@ fn build_instance_data(
         is_discrete_type: args.is_discrete_type,
         from_expandable_connector: args.ctx.is_in_expandable_connector(),
         evaluate: args.evaluate,
+        trainable: args.trainable,
         is_final: args.comp.is_final,
         is_overconstrained: args.ctx.is_in_overconstrained(),
         is_protected: args.comp.is_protected || args.ctx.is_in_protected(),
@@ -1557,6 +1559,7 @@ fn instantiate_component(
     let causality = resolve_component_causality(comp, class_def, ctx.inherited_causality());
 
     let evaluate = has_evaluate_annotation(comp);
+    let trainable = has_trainable_annotation(comp);
 
     let effective_variability = resolve_effective_variability(comp, ctx.inherited_variability());
 
@@ -1592,6 +1595,7 @@ fn instantiate_component(
         is_primitive,
         is_discrete_type,
         evaluate,
+        trainable,
         source_map: &tree.source_map,
         ctx,
         comp,
