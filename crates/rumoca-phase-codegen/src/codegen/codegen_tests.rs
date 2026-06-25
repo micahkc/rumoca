@@ -400,6 +400,197 @@ fn test_mlir_builtin_target_renders_tensor_scalar_fallback_rows() {
     );
 }
 
+/// Render a Solve template with an (empty) DAE in scope, as the multi-file
+/// jax/casadi-solve target path does. The bare `render_solve_template_with_name`
+/// helper leaves `dae` undefined, which trips the `dae.p | items` PARAM_NAMES
+/// loop these templates use; `new_with_dae` mirrors production.
+fn render_solve_py_template(problem: &solve::SolveProblem, template: &str) -> String {
+    let artifacts = solve::SolveArtifacts::default();
+    super::SolveTemplateRenderer::new_with_dae(problem, &artifacts, dae::Dae::new())
+        .expect("solve renderer with dae should construct")
+        .render(template)
+        .expect("python solve template should render")
+}
+
+/// Dense 2×2 · 2×2 MatMul derivative node. A occupies regs 0..4 (row-major),
+/// B occupies regs 4..8 (row-major); the node writes 4 outputs.
+fn solve_problem_with_two_by_two_matmul_derivative() -> solve::SolveProblem {
+    let mut problem = solve::SolveProblem::default();
+    problem.continuous.derivative_rhs = solve::ComputeBlock {
+        nodes: vec![solve::ComputeNode::MatMul {
+            lhs_ops: vec![
+                solve::LinearOp::Const { dst: 0, value: 1.0 },
+                solve::LinearOp::Const { dst: 1, value: 2.0 },
+                solve::LinearOp::Const { dst: 2, value: 3.0 },
+                solve::LinearOp::Const { dst: 3, value: 4.0 },
+            ],
+            lhs_start: 0,
+            rhs_ops: vec![
+                solve::LinearOp::Const { dst: 4, value: 5.0 },
+                solve::LinearOp::Const { dst: 5, value: 6.0 },
+                solve::LinearOp::Const { dst: 6, value: 7.0 },
+                solve::LinearOp::Const { dst: 7, value: 8.0 },
+            ],
+            rhs_start: 4,
+            m: 2,
+            k: 2,
+            n: 2,
+            lhs_sparsity: Default::default(),
+            rhs_sparsity: Default::default(),
+            metadata: Default::default(),
+            span: fixture_span(),
+        }],
+    };
+    problem
+}
+
+/// Dense 2×2 · 2×1 matvec MatMul derivative node (`W * u`, the NN-critical
+/// path). A occupies regs 0..4 (row-major), B (the vector) regs 4..6; the node
+/// writes 2 outputs.
+fn solve_problem_with_matvec_matmul_derivative() -> solve::SolveProblem {
+    let mut problem = solve::SolveProblem::default();
+    problem.continuous.derivative_rhs = solve::ComputeBlock {
+        nodes: vec![solve::ComputeNode::MatMul {
+            lhs_ops: vec![
+                solve::LinearOp::Const { dst: 0, value: 1.0 },
+                solve::LinearOp::Const { dst: 1, value: 2.0 },
+                solve::LinearOp::Const { dst: 2, value: 3.0 },
+                solve::LinearOp::Const { dst: 3, value: 4.0 },
+            ],
+            lhs_start: 0,
+            rhs_ops: vec![
+                solve::LinearOp::LoadY { dst: 4, index: 0 },
+                solve::LinearOp::LoadY { dst: 5, index: 1 },
+            ],
+            rhs_start: 4,
+            m: 2,
+            k: 2,
+            n: 1,
+            lhs_sparsity: Default::default(),
+            rhs_sparsity: Default::default(),
+            metadata: Default::default(),
+            span: fixture_span(),
+        }],
+    };
+    problem
+}
+
+#[test]
+fn test_jax_solve_renders_native_matmul_for_dense_node() {
+    let problem = solve_problem_with_two_by_two_matmul_derivative();
+    let rendered = render_solve_py_template(
+        &problem,
+        builtin_template("jax-solve", "jax_solve.py.jinja"),
+    );
+
+    // Native matmul call over reshaped row-major operands.
+    assert!(
+        rendered.contains("matmul = jnp.matmul"),
+        "jax-solve must bind the native matmul alias: {rendered}"
+    );
+    assert!(
+        rendered.contains("matmul("),
+        "dense MatMul node must emit a native matmul() call: {rendered}"
+    );
+    assert!(
+        rendered.contains(".reshape((2, 2))"),
+        "operands must be reshaped row-major to (m, k)/(k, n): {rendered}"
+    );
+    // All four output slots are written from the matmul result, row-major.
+    for slot in ["out[0] =", "out[1] =", "out[2] =", "out[3] ="] {
+        assert!(
+            rendered.contains(slot),
+            "all out[] slots must be written ({slot} missing): {rendered}"
+        );
+    }
+    assert!(
+        rendered.contains("[0, 0]") && rendered.contains("[1, 1]"),
+        "result extraction must index the matmul result matrix row-major: {rendered}"
+    );
+    // No fully-scalarized product expansion (the 1*5 + 2*7 style chain).
+    assert!(
+        !rendered.contains("(1.0) * (5.0)") && !rendered.contains("(1) * (5)"),
+        "dense MatMul must NOT be scalarized into element products: {rendered}"
+    );
+}
+
+#[test]
+fn test_jax_solve_renders_native_matvec() {
+    let problem = solve_problem_with_matvec_matmul_derivative();
+    let rendered = render_solve_py_template(
+        &problem,
+        builtin_template("jax-solve", "jax_solve.py.jinja"),
+    );
+
+    assert!(
+        rendered.contains("matmul("),
+        "matvec must use native matmul(): {rendered}"
+    );
+    assert!(
+        rendered.contains(".reshape((2, 1))"),
+        "the n=1 vector operand must reshape to (k, n) = (2, 1): {rendered}"
+    );
+    assert!(
+        rendered.contains("out[0] =") && rendered.contains("out[1] ="),
+        "both matvec outputs must be written: {rendered}"
+    );
+}
+
+#[test]
+fn test_casadi_solve_renders_native_mtimes_for_dense_node() {
+    let problem = solve_problem_with_two_by_two_matmul_derivative();
+    let rendered = render_solve_py_template(
+        &problem,
+        builtin_template("casadi-solve", "casadi_solve.py.jinja"),
+    );
+
+    assert!(
+        rendered.contains("mtimes = ca.mtimes"),
+        "casadi-solve must bind the native mtimes alias: {rendered}"
+    );
+    assert!(
+        rendered.contains("mtimes("),
+        "dense MatMul node must emit a native ca.mtimes() call: {rendered}"
+    );
+    // CasADi column-major reshape: reshape(vertcat(...), cols, rows).T
+    assert!(
+        rendered.contains("reshape(vertcat(") && rendered.contains(", 2, 2).T"),
+        "operands must use the column-major reshape(...).T idiom: {rendered}"
+    );
+    for slot in ["out[0] =", "out[1] =", "out[2] =", "out[3] ="] {
+        assert!(
+            rendered.contains(slot),
+            "all out[] slots must be written ({slot} missing): {rendered}"
+        );
+    }
+    assert!(
+        !rendered.contains("(1.0) * (5.0)") && !rendered.contains("(1) * (5)"),
+        "dense MatMul must NOT be scalarized into element products: {rendered}"
+    );
+}
+
+#[test]
+fn test_casadi_solve_renders_native_matvec() {
+    let problem = solve_problem_with_matvec_matmul_derivative();
+    let rendered = render_solve_py_template(
+        &problem,
+        builtin_template("casadi-solve", "casadi_solve.py.jinja"),
+    );
+
+    assert!(
+        rendered.contains("mtimes("),
+        "matvec must use native ca.mtimes(): {rendered}"
+    );
+    assert!(
+        rendered.contains(", 1, 2).T"),
+        "the n=1 vector operand must reshape (cols=n=1, rows=k=2).T: {rendered}"
+    );
+    assert!(
+        rendered.contains("out[0] =") && rendered.contains("out[1] ="),
+        "both matvec outputs must be written: {rendered}"
+    );
+}
+
 #[test]
 fn test_render_ast_template_with_name() {
     let ast = ast::ClassTree::new();

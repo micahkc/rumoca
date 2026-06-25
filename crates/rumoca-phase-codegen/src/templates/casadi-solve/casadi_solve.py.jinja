@@ -22,6 +22,9 @@ fabs = ca.fabs; sign = ca.sign; floor = ca.floor; ceil = ca.ceil
 atan2 = ca.atan2; fmin = ca.fmin; fmax = ca.fmax
 if_else = ca.if_else; logical_and = ca.logic_and; logical_or = ca.logic_or
 inf = ca.inf
+# Native tensor aliases for the solve dialect's MatMul nodes. ca.reshape is
+# column-major, so the renderer reshapes (cols, rows) then transposes.
+mtimes = ca.mtimes; reshape = ca.reshape; vertcat = ca.vertcat
 
 {% set n_y = solve.solve_layout.state_scalar_count -%}
 N_Y = {{ n_y }}
@@ -54,7 +57,23 @@ def _build_rhs():
 	P = ca.vertcat(*_parts)
 	out = [None] * {{ solve_blocks.continuous.derivative_rhs.output_count }}
 {%- set cfg = {"time": "0.0", "y": "x[{}]", "p": "P[{}]"} %}
-{{ render_solve_block_py(solve_blocks.continuous.derivative_rhs.scalar_programs.programs, cfg, "out[{}] = {}") }}
+{%- set derivative = solve_blocks.continuous.derivative_rhs %}
+{%- if derivative.scalar_programs_use_linear_solve_component %}
+	# Fallback: a LinearSolveComponent is present, so use the fully-scalarized
+	# program stream (which calls _linsolve_component) rather than node iteration.
+{{ render_solve_block_py(derivative.scalar_programs.programs, cfg, "out[{}] = {}", derivative.scalar_programs.output_indices) }}
+{%- else %}
+{%- set ns = namespace(offset=0) %}
+{%- for node in derivative.nodes %}
+{%- if node.MatMul is defined %}
+{{ render_matmul_casadi(node.MatMul, ns.offset, cfg) }}
+{%- set ns.offset = ns.offset + node.MatMul.m * node.MatMul.n %}
+{%- elif node.ScalarPrograms is defined %}
+{{ render_solve_block_py(node.ScalarPrograms.programs, cfg, "out[{}] = {}", node.ScalarPrograms.output_indices) }}
+{%- set ns.offset = ns.offset + store_output_count(node.ScalarPrograms.programs) %}
+{%- endif %}
+{%- endfor %}
+{%- endif %}
 	xdot = ca.vertcat(*out)
 	return ca.Function('rhs', [x, u, p], [xdot], ['x', 'u', 'p'], ['xdot'])
 

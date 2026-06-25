@@ -28,14 +28,14 @@ mod template_partition;
 pub(super) use dense_solve_render::{
     LinSolveRenderShape, SolveOutputTargets, checked_linsolve_product,
     checked_linsolve_render_count, checked_linsolve_sum, render_linsolve_mlir_function,
-    render_matmul_c_function, render_matmul_mlir_function,
-    render_optional_solve_slot_assign_c_function, render_solve_block_c_function,
-    render_solve_block_py_function, render_solve_block_rust_function,
-    render_solve_pre_param_binding_c_function, render_solve_row_c_function,
-    render_solve_row_output_wgsl_function, render_solve_row_rust_function,
-    render_solve_row_wgsl_function, render_solve_slot_assign_c_function, required_bool_field,
-    required_string_field, required_usize_field, solve_block_output_count_function,
-    validate_linsolve_render_shape,
+    render_matmul_c_function, render_matmul_casadi_function, render_matmul_jax_function,
+    render_matmul_mlir_function, render_optional_solve_slot_assign_c_function,
+    render_solve_block_c_function, render_solve_block_py_function,
+    render_solve_block_rust_function, render_solve_pre_param_binding_c_function,
+    render_solve_row_c_function, render_solve_row_output_wgsl_function,
+    render_solve_row_rust_function, render_solve_row_wgsl_function,
+    render_solve_slot_assign_c_function, required_bool_field, required_string_field,
+    required_usize_field, solve_block_output_count_function, validate_linsolve_render_shape,
 };
 #[cfg(test)]
 pub(super) use dense_solve_render::{MatMulRenderShape, solve_output_targets};
@@ -656,6 +656,18 @@ fn render_solve_op_c(
     output: Option<String>,
 ) -> Result<Option<String>, minijinja::Error> {
     render_solve_op_for(op, cfg, SolveRowDialect::C, regs, output)
+}
+
+/// Python (CasADi/JAX) counterpart of [`render_solve_op_c`]: evaluate one solve
+/// op into the register file using the bare-name Python dialect. Used by the
+/// native MatMul renderer to build the operand register file.
+fn render_solve_op_py(
+    op: &Value,
+    cfg: &SolveRowCConfig,
+    regs: &mut Vec<String>,
+    output: Option<String>,
+) -> Result<Option<String>, minijinja::Error> {
+    render_solve_op_for(op, cfg, SolveRowDialect::Python, regs, output)
 }
 
 /// The effect of a single `LinearOp` when rendering a solve program: either it
