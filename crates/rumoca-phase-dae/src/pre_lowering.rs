@@ -530,6 +530,7 @@ fn build_pre_parameter(
         description: Some(format!("pre() of {source_name}")),
         causality: dae::VariableCausality::CalculatedParameter,
         is_tunable: false,
+        trainable: false,
         origin: dae::VariableOrigin::Generated,
     }
 }

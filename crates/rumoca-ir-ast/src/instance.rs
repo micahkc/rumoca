@@ -659,6 +659,11 @@ pub struct InstanceData {
     /// Structural parameters can be evaluated at compile time for if-equation
     /// branch selection (MLS §18.3).
     pub evaluate: bool,
+    /// True if this parameter has annotation(__rumoca(trainable=true)).
+    /// Marks a learnable weight (theta) so codegen can split it from fixed
+    /// parameters (p).
+    #[serde(default)]
+    pub trainable: bool,
     /// True if this component declaration has the `final` prefix (MLS §7.2.6).
     /// Used for preserving flat-output declaration qualifiers.
     pub is_final: bool,
@@ -721,6 +726,7 @@ impl Default for InstanceData {
             is_discrete_type: false,
             from_expandable_connector: false,
             evaluate: false,
+            trainable: false,
             is_final: false,
             is_overconstrained: false,
             is_protected: false,

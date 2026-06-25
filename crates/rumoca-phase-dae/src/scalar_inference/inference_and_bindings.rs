@@ -612,6 +612,7 @@ pub(crate) fn create_dae_variable(
         description: var.description.clone(),
         causality: variable_causality(var, is_tunable),
         is_tunable,
+        trainable: var.trainable,
         origin: rumoca_ir_dae::VariableOrigin::Source,
     })
 }
