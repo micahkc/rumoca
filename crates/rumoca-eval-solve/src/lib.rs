@@ -37,6 +37,7 @@ mod runtime_events;
 pub mod sim_driver;
 mod sparsity;
 mod table_runtime;
+mod trajectory_adjoint;
 mod update_rows;
 pub use compute_block_scalarize::{
     ScalarizeError, checked_contiguous_output_count, checked_tensor_output_count,
@@ -69,6 +70,7 @@ pub use table_runtime::{
     TableRuntimeError, eval_table_bound_value_in, eval_table_lookup_slope_value_in,
     eval_table_lookup_value_in, eval_time_table_next_event_value_in,
 };
+pub use trajectory_adjoint::{EulerGrid, TrajectoryAdjointScratch, TrajectoryGradient};
 pub use update_rows::{
     UpdateRowApplication, apply_scalar_slot_value, apply_scalar_slot_values,
     eval_and_apply_update_rows,
