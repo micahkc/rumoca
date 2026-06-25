@@ -63,7 +63,14 @@ fn euler_loss(runtime: &SolveRuntime, x0: &[f64], params: &[f64]) -> f64 {
     for n in 0..STEPS {
         let t_n = T0 + H * n as f64;
         runtime
-            .eval_state_derivatives_into(t_n, &state, params, settle.tol, settle.max_iters, &mut der)
+            .eval_state_derivatives_into(
+                t_n,
+                &state,
+                params,
+                settle.tol,
+                settle.max_iters,
+                &mut der,
+            )
             .expect("primal derivative");
         for i in 0..runtime.state_count {
             state[i] += H * der[i];
@@ -94,7 +101,14 @@ fn forward_sensitivity_grad(
     for n in 0..STEPS {
         let t_n = T0 + H * n as f64;
         runtime
-            .eval_state_derivatives_into(t_n, &state, params, settle.tol, settle.max_iters, &mut der)
+            .eval_state_derivatives_into(
+                t_n,
+                &state,
+                params,
+                settle.tol,
+                settle.max_iters,
+                &mut der,
+            )
             .expect("primal derivative");
         // ds/dt = ∂f/∂x·s + ∂f/∂p, evaluated at the current (state, sens).
         runtime
@@ -115,7 +129,11 @@ fn forward_sensitivity_grad(
             sens[i] += H * sens_rhs[i];
         }
         // Accumulate the loss-cotangent pairing for the new stored state.
-        grad += state.iter().zip(&sens).map(|(x, s)| 2.0 * x * s).sum::<f64>();
+        grad += state
+            .iter()
+            .zip(&sens)
+            .map(|(x, s)| 2.0 * x * s)
+            .sum::<f64>();
     }
     grad
 }
@@ -160,8 +178,7 @@ fn trajectory_euler_adjoint_matches_forward_sensitivity_and_fd() {
         .iter()
         .map(|x| x.iter().map(|v| 2.0 * v).collect())
         .collect();
-    let state_cotangents: Vec<&[f64]> =
-        cotangent_storage.iter().map(|c| c.as_slice()).collect();
+    let state_cotangents: Vec<&[f64]> = cotangent_storage.iter().map(|c| c.as_slice()).collect();
 
     // --- Native trajectory adjoint. ---
     let mut scratch = TrajectoryAdjointScratch::default();
